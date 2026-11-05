@@ -133,7 +133,7 @@ jobs:
         working-directory: kernel
         run: |
           set -euo pipefail
-          BASE="https://raw.githubusercontent.com/robot360-upload/patches/main"
+          BASE="https://raw.githubusercontent.com/robot360-upload/Custom-Kernel-Builder/main"
 
           curl -fL "$BASE/namespace.c" -o fs/namespace.c
 
@@ -149,7 +149,7 @@ jobs:
           python3 - <<'PY'
           import urllib.request
 
-          url = "https://raw.githubusercontent.com/robot360-upload/patches/main/enable_kprobes.py"
+          url = "https://raw.githubusercontent.com/robot360-upload/Custom-Kernel-Builder/main/enable_kprobes.py"
 
           urllib.request.urlretrieve(url, "/tmp/enable_kprobes.py")
           PY
