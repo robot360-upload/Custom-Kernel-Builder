@@ -1,0 +1,265 @@
+name: Build SM6115 Kernel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison cpio curl flex git \
+            libelf-dev libncurses-dev libssl-dev \
+            lld llvm make python3 rsync zstd
+
+      - name: Install Neutron Clang
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/toolchains/neutron-clang"
+          cd "$HOME/toolchains/neutron-clang"
+
+          curl -fLo antman \
+            https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
+          chmod +x antman
+
+          ./antman -S
+          test -x bin/clang
+          echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+
+          ./antman --patch=glibc
+          ./antman -I
+          bin/clang --version
+          bin/ld.lld --version
+
+      - name: Clone LineageOS kernel
+        run: |
+          set -euo pipefail
+          git clone --depth=1 \
+            --branch lineage-24.0 \
+            https://github.com/LineageOS/android_kernel_samsung_sm6115 \
+            kernel
+
+      - name: Patch module CRC verification
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("kernel/module.c")
+          source = path.read_text()
+
+          pattern = re.compile(
+              r'(?m)(^bad_version:\n'
+              r'[ \t]*pr_warn\("%s: disagrees about version of symbol %s\\n",\n'
+              r'[ \t]*info->name, symname\);\n'
+              r'[ \t]*)return 0;'
+          )
+
+          patched, count = pattern.subn(r'\1return 1;', source)
+
+          if count != 1:
+              raise SystemExit(
+                  f"Expected exactly one CRC failure path, found {count}"
+              )
+
+          path.write_text(patched)
+          print("CRC mismatch return changed to 1.")
+
+          if "module_layout" not in patched:
+              raise SystemExit("module_layout check unexpectedly missing")
+          PY
+
+          git diff --check
+          git diff -- kernel/module.c
+      - name: Disable automatic kernel version suffix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("scripts/setlocalversion")
+          text = path.read_text()
+
+          pattern = (
+              r'(?m)^([ \t]*)if test "\$\{LOCALVERSION\+set\}" != "set"; then\n'
+              r'[ \t]*scm=\$\(scm_version --short\)\n'
+              r'[ \t]*res="\$res\$\{scm:\+\+\}"\n'
+              r'[ \t]*fi'
+          )
+
+          updated, count = re.subn(pattern, r'\1:', text, count=1)
+
+          if count != 1:
+              raise SystemExit(
+                  f"ERROR: Expected exactly one suffix block; found {count}"
+              )
+
+          path.write_text(updated)
+          print("Automatic '+' suffix disabled.")
+          PY
+
+          git diff --check
+      - name: Install KernelSU-Next
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          curl -fLSs \
+            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh \
+            | bash -s legacy
+
+          test -f drivers/kernelsu/Kconfig
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+      - name: Install NoMount
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          curl -fLSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+      - name: Replace namespace.c
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          BASE="https://raw.githubusercontent.com/robot360-upload/patches/main"
+
+          curl -fL "$BASE/namespace.c" -o fs/namespace.c
+
+          test -s fs/namespace.c
+          grep -q 'path_umount' fs/namespace.c
+
+          git diff --check
+
+      - name: Enable Kprobes and KernelSU-Next
+        working-directory: kernel
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.request
+
+          url = "https://raw.githubusercontent.com/robot360-upload/patches/main/enable_kprobes.py"
+
+          urllib.request.urlretrieve(url, "/tmp/enable_kprobes.py")
+          PY
+
+          python3 /tmp/enable_kprobes.py
+
+      - name: Configure kernel
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC=clang
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+
+          make O=out vendor/bengal-perf_defconfig
+
+          scripts/kconfig/merge_config.sh \
+            -m -O out \
+            out/.config \
+            arch/arm64/configs/vendor/gta4l-common.config
+
+          scripts/config --file out/.config \
+            --enable MODVERSIONS \
+            --set-str LOCALVERSION "-perf-gcbd2ed85b026" \
+            --disable LOCALVERSION_AUTO
+
+          make O=out olddefconfig
+
+          echo "=== Final kernel configuration ==="
+          grep -E '^CONFIG_(MODVERSIONS|LOCALVERSION|LOCALVERSION_AUTO)=' out/.config
+
+          grep -q '^CONFIG_MODVERSIONS=y$' out/.config
+          grep -q '^CONFIG_LOCALVERSION="-perf-gcbd2ed85b026"$' out/.config
+          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' out/.config
+      - name: Verify Kprobes configuration
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Checking Kprobes configuration ==="
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+
+          config = Path("out/.config")
+
+          if not config.exists():
+              sys.exit("ERROR: out/.config not found")
+
+          settings = {
+              "CONFIG_KPROBES": "y",
+              "CONFIG_KRETPROBES": "y",
+              "CONFIG_KPROBE_EVENTS": "y",
+              "CONFIG_KSU": "y",
+              "CONFIG_KSU_KPROBES_HOOK": "y",
+          }
+
+          actual = {}
+
+          for line in config.read_text().splitlines():
+              if "=" in line:
+                  key, value = line.split("=", 1)
+                  actual[key] = value
+
+          failed = False
+
+          for key, expected in settings.items():
+              value = actual.get(key, "NOT SET")
+              print(f"{key}: {value}")
+
+              if value != expected:
+                  failed = True
+
+          if failed:
+              sys.exit("ERROR: Configuration verification failed")
+
+          print("All Kprobes configuration checks passed.")
+          PY
+
+      - name: Build uncompressed Image
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC=clang
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+
+          clang --version
+          make O=out -j"$(nproc)" Image
+
+          test -s out/arch/arm64/boot/Image
+          file out/arch/arm64/boot/Image
+          ls -lh out/arch/arm64/boot/Image
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SM-T505-SM6115-KernelSU-Image
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/.config
+          if-no-files-found: error
+          retention-days: 7
