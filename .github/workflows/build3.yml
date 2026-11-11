@@ -1,4 +1,4 @@
-name: Build SM6115 Kernel
+name: Build SM6115 Kernel With BakaSU And NoMount
 
 on:
   workflow_dispatch:
@@ -47,41 +47,6 @@ jobs:
             https://github.com/LineageOS/android_kernel_samsung_sm6115 \
             kernel
 
-      - name: Patch module CRC verification
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("kernel/module.c")
-          source = path.read_text()
-
-          pattern = re.compile(
-              r'(?m)(^bad_version:\n'
-              r'[ \t]*pr_warn\("%s: disagrees about version of symbol %s\\n",\n'
-              r'[ \t]*info->name, symname\);\n'
-              r'[ \t]*)return 0;'
-          )
-
-          patched, count = pattern.subn(r'\1return 1;', source)
-
-          if count != 1:
-              raise SystemExit(
-                  f"Expected exactly one CRC failure path, found {count}"
-              )
-
-          path.write_text(patched)
-          print("CRC mismatch return changed to 1.")
-
-          if "module_layout" not in patched:
-              raise SystemExit("module_layout check unexpectedly missing")
-          PY
-
-          git diff --check
-          git diff -- kernel/module.c
       - name: Disable automatic kernel version suffix
         working-directory: kernel
         shell: bash
@@ -114,13 +79,15 @@ jobs:
           PY
 
           git diff --check
-      - name: Install KernelSU-Next
+      - name: Install BakaSU
         working-directory: kernel
+        shell: bash
         run: |
           set -euo pipefail
+
           curl -fLSs \
-            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh \
-            | bash -s legacy
+            "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" \
+            | bash
 
           test -f drivers/kernelsu/Kconfig
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
@@ -142,19 +109,21 @@ jobs:
 
           git diff --check
 
-      - name: Enable Kprobes and KernelSU-Next
+      - name: Apply BakaSU manual hooks
         working-directory: kernel
         shell: bash
         run: |
-          python3 - <<'PY'
-          import urllib.request
+          set -euo pipefail
 
-          url = "https://raw.githubusercontent.com/robot360-upload/Custom-Kernel-Builder/main/enable_kprobes.py"
+          curl -fL \
+            "https://raw.githubusercontent.com/robot360-upload/Custom-Kernel-Builder/main/bakasu-manual-hooks.patch" \
+            -o /tmp/bakasu-manual-hooks.patch
 
-          urllib.request.urlretrieve(url, "/tmp/enable_kprobes.py")
-          PY
+          git apply --check /tmp/bakasu-manual-hooks.patch
+          git apply /tmp/bakasu-manual-hooks.patch
+          git diff --check
 
-          python3 /tmp/enable_kprobes.py
+          echo "BakaSU manual hooks patch applied successfully."
 
       - name: Configure kernel
         working-directory: kernel
@@ -176,6 +145,11 @@ jobs:
             arch/arm64/configs/vendor/gta4l-common.config
 
           scripts/config --file out/.config \
+            --enable KSU \
+            --enable KSU_MANUAL_HOOK \
+            --enable KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
+            --enable KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
+            --enable KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
             --enable MODVERSIONS \
             --set-str LOCALVERSION "-perf-gcbd2ed85b026" \
             --disable LOCALVERSION_AUTO
@@ -183,58 +157,17 @@ jobs:
           make O=out olddefconfig
 
           echo "=== Final kernel configuration ==="
-          grep -E '^CONFIG_(MODVERSIONS|LOCALVERSION|LOCALVERSION_AUTO)=' out/.config
+          grep -E '^CONFIG_(KSU|KSU_MANUAL_HOOK|KSU_MANUAL_HOOK_AUTO_INPUT_HOOK|KSU_MANUAL_HOOK_AUTO_SETUID_HOOK|KSU_MANUAL_HOOK_AUTO_INITRC_HOOK|MODVERSIONS|LOCALVERSION|LOCALVERSION_AUTO)=' out/.config
+
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y$' out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y$' out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y$' out/.config
 
           grep -q '^CONFIG_MODVERSIONS=y$' out/.config
           grep -q '^CONFIG_LOCALVERSION="-perf-gcbd2ed85b026"$' out/.config
           grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' out/.config
-      - name: Verify Kprobes configuration
-        working-directory: kernel
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== Checking Kprobes configuration ==="
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import sys
-
-          config = Path("out/.config")
-
-          if not config.exists():
-              sys.exit("ERROR: out/.config not found")
-
-          settings = {
-              "CONFIG_KPROBES": "y",
-              "CONFIG_KRETPROBES": "y",
-              "CONFIG_KPROBE_EVENTS": "y",
-              "CONFIG_KSU": "y",
-              "CONFIG_KSU_KPROBES_HOOK": "y",
-          }
-
-          actual = {}
-
-          for line in config.read_text().splitlines():
-              if "=" in line:
-                  key, value = line.split("=", 1)
-                  actual[key] = value
-
-          failed = False
-
-          for key, expected in settings.items():
-              value = actual.get(key, "NOT SET")
-              print(f"{key}: {value}")
-
-              if value != expected:
-                  failed = True
-
-          if failed:
-              sys.exit("ERROR: Configuration verification failed")
-
-          print("All Kprobes configuration checks passed.")
-          PY
-
       - name: Build uncompressed Image
         working-directory: kernel
         run: |
