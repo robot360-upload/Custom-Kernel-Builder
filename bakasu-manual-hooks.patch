@@ -131,7 +131,7 @@ Apply from the kernel source root:  patch -p1 < bakasu-manual-hooks.patch
 diff --git a/kernel/reboot.c b/kernel/reboot.c
 --- a/kernel/reboot.c
 +++ b/kernel/reboot.c
-@@ -316,10 +316,18 @@
+@@ -316,10 +316,16 @@
  SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
  		void __user *, arg)
  {
