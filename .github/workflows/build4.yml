@@ -1,0 +1,177 @@
+name: Build SM6115 Kernel With BakaSU, NoMount and SUSFS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison cpio curl flex git \
+            libncurses-dev libssl-dev \
+            make python3 rsync zstd
+
+      - name: Install Neutron Clang
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/toolchains/neutron-clang"
+          cd "$HOME/toolchains/neutron-clang"
+
+          curl -fLo antman \
+            https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
+          chmod +x antman
+
+          ./antman -S
+          test -x bin/clang
+          echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+
+          ./antman --patch=glibc
+          ./antman -I
+          bin/clang --version
+          bin/ld.lld --version
+
+      - name: Clone Custom Kernel Source
+        run: |
+          set -euo pipefail
+          git clone --depth=1 \
+            --branch lineage-24.0 \
+            https://github.com/robot360-upload/android_kernel_samsung_sm6115 \
+            kernel
+
+      - name: Disable automatic kernel version suffix
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("scripts/setlocalversion")
+          text = path.read_text()
+
+          pattern = (
+              r'(?m)^([ \t]*)if test "\$\{LOCALVERSION\+set\}" != "set"; then\n'
+              r'[ \t]*scm=\$\(scm_version --short\)\n'
+              r'[ \t]*res="\$res\$\{scm:\+\+\}"\n'
+              r'[ \t]*fi'
+          )
+
+          updated, count = re.subn(pattern, r'\1:', text, count=1)
+
+          if count != 1:
+              raise SystemExit(
+                  f"ERROR: Expected exactly one suffix block; found {count}"
+              )
+
+          path.write_text(updated)
+          print("Automatic '+' suffix disabled.")
+          PY
+
+          git diff --check
+      - name: Install BakaSU
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fLSs \
+            "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" \
+            | bash
+
+          test -f drivers/kernelsu/Kconfig
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
+      - name: Install NoMount
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          curl -fLSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+          
+      - name: Check source formatting
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git diff --check
+
+      - name: Configure kernel
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC=clang
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+
+          make O=out vendor/bengal-perf_defconfig
+
+          scripts/kconfig/merge_config.sh \
+            -m -O out \
+            out/.config \
+            arch/arm64/configs/vendor/gta4l-common.config
+
+          scripts/config --file out/.config \
+            --enable MODVERSIONS \
+            --set-str LOCALVERSION "-perf-gcbd2ed85b026" \
+            --disable LOCALVERSION_AUTO
+
+          make O=out olddefconfig
+
+          echo "=== Final kernel configuration ==="
+          grep -E '^CONFIG_(KSU|KSU_SUSFS|KSU_SUSFS_SUS_PATH|KSU_SUSFS_SUS_MOUNT|KSU_SUSFS_SUS_KSTAT|KSU_SUSFS_SPOOF_UNAME|KSU_SUSFS_ENABLE_LOG|KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG|KSU_SUSFS_OPEN_REDIRECT|KSU_SUSFS_SUS_MAP|MODVERSIONS|LOCALVERSION|LOCALVERSION_AUTO)=' out/.config
+
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_SUS_MOUNT=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_SUS_KSTAT=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_SPOOF_UNAME=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_OPEN_REDIRECT=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS_SUS_MAP=y$' out/.config
+
+          grep -q '^CONFIG_MODVERSIONS=y$' out/.config
+          grep -q '^CONFIG_LOCALVERSION="-perf-gcbd2ed85b026"$' out/.config
+          grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' out/.config
+      - name: Build uncompressed Image
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC=clang
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+
+          clang --version
+          make O=out -j"$(nproc)" Image
+
+          test -s out/arch/arm64/boot/Image
+          file out/arch/arm64/boot/Image
+          ls -lh out/arch/arm64/boot/Image
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SM-T505-SM6115-KernelSU-Image
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/.config
+          if-no-files-found: error
+          retention-days: 7
