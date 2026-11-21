@@ -47,6 +47,12 @@ jobs:
             https://github.com/robot360-upload/android_kernel_samsung_sm6115 \
             kernel
 
+      - name: Initialize latest submodules
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          git submodule update --init --remote --recursive --depth=1
+          git submodule status --recursive
       - name: Disable automatic kernel version suffix
         working-directory: kernel
         shell: bash
@@ -79,23 +85,6 @@ jobs:
           PY
 
           git diff --check
-      - name: Install BakaSU
-        working-directory: kernel
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          curl -fLSs \
-            "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" \
-            | bash
-
-          test -f drivers/kernelsu/Kconfig
-          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig
-      - name: Install NoMount
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          curl -fLSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
           
       - name: Check source formatting
         working-directory: kernel
