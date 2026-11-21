@@ -47,12 +47,6 @@ jobs:
             https://github.com/robot360-upload/android_kernel_samsung_sm6115 \
             kernel
 
-      - name: Initialize latest submodules
-        working-directory: kernel
-        run: |
-          set -euo pipefail
-          git submodule update --init --remote --recursive --depth=1
-          git submodule status --recursive
       - name: Disable automatic kernel version suffix
         working-directory: kernel
         shell: bash
