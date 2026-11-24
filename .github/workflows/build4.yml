@@ -49,8 +49,8 @@ jobs:
 
       - name: Update and Initialize Git submodules
         run: |
-          git submodule update --init --recursive --remote
-          git -C kernel submodule update --init --recursive
+          set -euo pipefail
+          git -C kernel submodule update --init --recursive --remote
           
       - name: Disable automatic kernel version suffix
         working-directory: kernel
