@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           git -C kernel submodule update --init --recursive --remote
-          
+
       - name: Disable automatic kernel version suffix
         working-directory: kernel
         shell: bash
@@ -219,27 +219,34 @@ jobs:
           with open(config) as f:
               original = f.readlines()
 
+          result = []
+
           pattern = re.compile(
-              r'^(?:CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set)'
+              r'^(?:CONFIG_([A-Za-z0-9_]+)=|# CONFIG_([A-Za-z0-9_]+) is not set)'
           )
 
-          result = []
           for line in original:
               match = pattern.match(line)
+
               if match:
-                  symbol = re.match(r'(?:CONFIG_[A-Za-z0-9_]+|# (CONFIG_[A-Za-z0-9_]+))', line)
-                  if symbol:
-                      name = symbol.group(1) or symbol.group(2)
-                      if name in symbols:
-                          continue
+                  name = match.group(1) or match.group(2)
+                  symbol = f"CONFIG_{name}"
+
+                  if symbol in symbols:
+                      continue
+
               result.append(line)
 
           with open(config, 'w') as f:
               f.writelines(result)
+
               if result and not result[-1].endswith('\n'):
                   f.write('\n')
+
               f.write('\n')
               f.write(additions)
+
+          print(f"Updated {len(symbols)} configuration symbols.")
           PY
 
           echo "DroidSpaces configuration added."
@@ -261,6 +268,7 @@ jobs:
           fi
 
           echo "DroidSpaces setup completed."
+
       - name: Check source formatting
         working-directory: kernel
         run: |
@@ -311,6 +319,7 @@ jobs:
           grep -q '^CONFIG_MODVERSIONS=y$' out/.config
           grep -q '^CONFIG_LOCALVERSION="-perf-gcbd2ed85b026"$' out/.config
           grep -q '^# CONFIG_LOCALVERSION_AUTO is not set$' out/.config
+
       - name: Build uncompressed Image
         working-directory: kernel
         run: |
