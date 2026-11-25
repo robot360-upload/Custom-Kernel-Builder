@@ -86,6 +86,7 @@ jobs:
           git diff --check
 
       - name: Enable DroidSpaces kernel support
+        working-directory: kernel
         shell: bash
         run: |
           set -euo pipefail
