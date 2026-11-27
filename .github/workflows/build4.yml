@@ -16,9 +16,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison ccache cpio curl flex git \
-            libelf-dev libncurses-dev libssl-dev \
-            lld llvm make python3 rsync zstd
+            bc bison cpio curl flex git \
+            libncurses-dev libssl-dev \
+            make python3 rsync zstd
 
       - name: Install Neutron Clang
         run: |
@@ -39,20 +39,6 @@ jobs:
           bin/clang --version
           bin/ld.lld --version
 
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: sm6115-ccache-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            sm6115-ccache-${{ runner.os }}-
-
-      - name: Configure ccache
-        run: |
-          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
-          echo "CCACHE_MAXSIZE=5G" >> "$GITHUB_ENV"
-          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
-          
       - name: Clone Custom Kernel Source
         run: |
           set -euo pipefail
@@ -158,17 +144,12 @@ jobs:
           export ARCH=arm64
           export LLVM=1
           export LLVM_IAS=1
-          export CC="ccache clang"
-          export HOSTCC="ccache clang"
-          export HOSTCXX="ccache clang++"
+          export CC=clang
+          export HOSTCC=clang
+          export HOSTCXX=clang++
 
           clang --version
-          ccache --version
-
           make O=out -j"$(nproc)" Image
-
-          echo "=== ccache statistics ==="
-          ccache --show-stats
 
           test -s out/arch/arm64/boot/Image
           file out/arch/arm64/boot/Image
