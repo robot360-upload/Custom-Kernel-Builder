@@ -155,12 +155,61 @@ jobs:
           file out/arch/arm64/boot/Image
           ls -lh out/arch/arm64/boot/Image
 
-      - name: Upload kernel artifacts
+      
+      - name: Prepare AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+
+          rm -rf AnyKernel3/.git
+          rm -rf AnyKernel3/.github
+
+      - name: Configure AnyKernel3
+        run: |
+          python3 - <<'PY'
+          import re
+
+          path = "AnyKernel3/anykernel.sh"
+
+          with open(path, "r") as f:
+              content = f.read()
+
+          replacements = {
+              "kernel.string": "CustomKernel",
+              "do.devicecheck": "0",
+              "BLOCK": "/dev/block/by-name/boot",
+          }
+
+          for key, value in replacements.items():
+              pattern = rf"(?m)^(\s*{re.escape(key)}\s*=\s*).*$"
+              content, count = re.subn(
+                  pattern,
+                  lambda m: m.group(1) + value,
+                  content
+              )
+
+              if count != 1:
+                  raise SystemExit(
+                      f"Expected exactly one {key} assignment, found {count}"
+                  )
+
+          with open(path, "w") as f:
+              f.write(content)
+
+          print("AnyKernel3 configuration updated successfully.")
+          PY
+
+      - name: Package kernel
+        run: |
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
+
+          cd AnyKernel3
+          zip -r9 "$GITHUB_WORKSPACE/CustomKernel.zip" .
+
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SM-T505-SM6115-KernelSU-Image
-          path: |
-            kernel/out/arch/arm64/boot/Image
-            kernel/out/.config
+          name: CustomKernel
+          path: CustomKernel.zip
           if-no-files-found: error
           retention-days: 7
+
